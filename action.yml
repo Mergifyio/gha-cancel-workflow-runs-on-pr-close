@@ -1,0 +1,51 @@
+name: "gha-cancel-workflow-runs-on-pr-close"
+description: "GitHub Action to cancel workflow runs when a pull request is closed."
+author: "Mergify"
+
+branding:
+  icon: "x"
+  color: "red"
+
+inputs: {}
+
+runs:
+  using: "composite"
+  steps:
+    - uses: actions/github-script@v8
+      with:
+        github-token: ${{ github.token }}
+        script: |
+          const eventName = context.eventName;
+          const pr = context.payload.pull_request;
+          if (eventName !== 'pull_request' || !pr || context.payload.action !== 'closed') {
+            core.info('Not a pull_request.closed event; skipping.');
+            return;
+          }
+
+          const { owner, repo } = context.repo;
+          const currentRunId = Number(process.env.GITHUB_RUN_ID);
+          const inProgress = await github.paginate(
+            github.rest.actions.listWorkflowRunsForRepo,
+            { owner, repo, status: 'in_progress', per_page: 100 }
+          );
+          const queued = await github.paginate(
+            github.rest.actions.listWorkflowRunsForRepo,
+            { owner, repo, status: 'queued', per_page: 100 }
+          );
+
+          const all = inProgress.concat(queued);
+
+          const targets = all.filter(run =>
+            run.id !== currentRunId && (
+              (run.pull_requests || []).some(r => r.number === pr.number) ||
+              run.head_branch === pr.head.ref ||
+              run.head_sha === pr.head.sha
+            )
+          );
+
+          for (const run of targets) {
+            await github.rest.actions.cancelWorkflowRun({ owner, repo, run_id: run.id });
+            core.info(`Canceled ${run.html_url}`);
+          }
+
+
