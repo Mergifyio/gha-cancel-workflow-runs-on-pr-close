@@ -1,0 +1,37 @@
+extends: .github
+
+queue_rules:
+  - name: default
+    autoqueue: true
+    allow_inplace_checks: true
+    queue_conditions:
+      - base = main
+      - "#approved-reviews-by>=2"
+      - "#changes-requested-reviews-by=0"
+      - "#review-threads-unresolved=0"
+      - "#review-requested=0"
+    commit_message_template: |
+      {{ title }} (#{{ number }})
+
+      {{ body }}
+    merge_method: squash
+
+pull_request_rules:
+  - name: request review
+    conditions:
+      - -author=renovate[bot]
+      - -merged
+      - -closed
+      - "#approved-reviews-by=0"
+      - "#changes-requested-reviews-by=0"
+      - "review-requested!=@devs"
+    actions:
+      request_reviews:
+        teams:
+          - devs
+
+merge_queue:
+  max_parallel_checks: 5
+
+merge_protections_settings:
+  reporting_method: deployments
