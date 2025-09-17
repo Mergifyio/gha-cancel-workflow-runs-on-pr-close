@@ -19,5 +19,5 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Cancel related runs
-        uses: Mergifyio/gha-cancel-on-pr-close@v1
+        uses: Mergifyio/gha-cancel-workflow-runs-on-pr-close@v1
 ```
