@@ -24,6 +24,12 @@ runs:
 
           const { owner, repo } = context.repo;
           const currentRunId = Number(process.env.GITHUB_RUN_ID);
+
+          // Fetch metadata for the current run to determine a conservative cutoff time.
+          const closedAt = pr && pr.closed_at ? new Date(pr.closed_at) : null;
+          const currentRun = await github.rest.actions.getWorkflowRun({ owner, repo, run_id: currentRunId });
+          const cutoffTime = closedAt || new Date(currentRun.data.created_at);
+
           const inProgress = await github.paginate(
             github.rest.actions.listWorkflowRunsForRepo,
             { owner, repo, status: 'in_progress', per_page: 100 }
@@ -35,13 +41,15 @@ runs:
 
           const all = inProgress.concat(queued);
 
-          const targets = all.filter(run =>
-            run.id !== currentRunId && (
-              (run.pull_requests || []).some(r => r.number === pr.number) ||
-              run.head_branch === pr.head.ref ||
-              run.head_sha === pr.head.sha
-            )
-          );
+          // Only cancel runs for the same PR, created before the PR was closed (or before this run started).
+          const targets = all.filter(run => {
+            if (run.id === currentRunId) return false;
+            if (run.event !== 'pull_request') return false;
+            const isSamePr = Array.isArray(run.pull_requests) && run.pull_requests.some(r => r.number === pr.number);
+            if (!isSamePr) return false;
+            const runCreatedAt = new Date(run.created_at || run.run_started_at || 0);
+            return runCreatedAt <= cutoffTime;
+          });
 
           for (const run of targets) {
             await github.rest.actions.cancelWorkflowRun({ owner, repo, run_id: run.id });
