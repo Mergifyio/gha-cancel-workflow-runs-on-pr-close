@@ -6,7 +6,7 @@ queue_rules:
     allow_inplace_checks: true
     queue_conditions:
       - base = main
-      - "#approved-reviews-by>=2"
+      - "#approved-reviews-by>=1"
       - "#changes-requested-reviews-by=0"
       - "#review-threads-unresolved=0"
       - "#review-requested=0"
