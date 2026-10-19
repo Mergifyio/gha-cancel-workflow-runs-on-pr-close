@@ -2,8 +2,6 @@ extends: .github
 
 queue_rules:
   - name: default
-    autoqueue: true
-    allow_inplace_checks: true
     queue_conditions:
       - base = main
       - "#approved-reviews-by>=2"
@@ -36,3 +34,4 @@ merge_queue:
 
 merge_protections_settings:
   reporting_method: deployments
+  auto_merge_conditions: true
