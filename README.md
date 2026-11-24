@@ -21,3 +21,15 @@ jobs:
       - name: Cancel related runs
         uses: Mergifyio/gha-cancel-workflow-runs-on-pr-close@v1
 ```
+
+### Push runs of a merge queue draft
+
+To also cancel the `push` runs on the branch of a merge queue draft closed unmerged, name its prefix in
+`push-branch-prefixes`, one per line:
+
+```yaml
+      - name: Cancel related runs
+        uses: Mergifyio/gha-cancel-workflow-runs-on-pr-close@v1
+        with:
+          push-branch-prefixes: mergify/merge-queue/
+```
