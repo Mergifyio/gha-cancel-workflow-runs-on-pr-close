@@ -23,37 +23,50 @@ runs:
           }
 
           const { owner, repo } = context.repo;
+          const baseRepoId = pr.base.repo.id;
+          if (pr.head.repo?.id !== baseRepoId) {
+            // A fork's pull request gets a read-only token, which cannot cancel runs.
+            core.info('Head repository is a fork or was deleted; skipping.');
+            return;
+          }
           const currentRunId = Number(process.env.GITHUB_RUN_ID);
+          const cutoffTime = new Date(pr.closed_at);
 
-          // Fetch metadata for the current run to determine a conservative cutoff time.
-          const closedAt = pr && pr.closed_at ? new Date(pr.closed_at) : null;
-          const currentRun = await github.rest.actions.getWorkflowRun({ owner, repo, run_id: currentRunId });
-          const cutoffTime = closedAt || new Date(currentRun.data.created_at);
-
-          const inProgress = await github.paginate(
+          // One listing rather than one per status: a run can go back from `in_progress` to
+          // `waiting`, so a run can slip between two per-status listings. `created` keeps it to this
+          // pull request's lifetime, as a reused branch name can carry years of completed runs. A run
+          // created while paging pushes the others down a page, so one can be listed twice.
+          const listed = await github.paginate(
             github.rest.actions.listWorkflowRunsForRepo,
-            { owner, repo, status: 'in_progress', per_page: 100 }
-          );
-          const queued = await github.paginate(
-            github.rest.actions.listWorkflowRunsForRepo,
-            { owner, repo, status: 'queued', per_page: 100 }
+            { owner, repo, event: 'pull_request', branch: pr.head.ref, created: `>=${pr.created_at}`, per_page: 100 }
           );
 
-          const all = inProgress.concat(queued);
-
-          // Only cancel runs for the same PR, created before the PR was closed (or before this run started).
-          const targets = all.filter(run => {
-            if (run.id === currentRunId) return false;
-            if (run.event !== 'pull_request') return false;
-            const isSamePr = Array.isArray(run.pull_requests) && run.pull_requests.some(r => r.number === pr.number);
-            if (!isSamePr) return false;
+          // GitHub fills `run.pull_requests` with the open pull requests whose head matches the run,
+          // so it no longer lists this one once closed: match the head branch and repository instead.
+          // A run listing another pull request of this repository belongs to an open one sharing this
+          // head branch. The workflows this close triggers are created no earlier than `closed_at`, at
+          // one-second resolution, hence the strict comparison.
+          const targets = [...new Map(listed.map(run => [run.id, run])).values()].filter(run => {
+            if (run.id === currentRunId || run.status === 'completed') return false;
+            if (run.head_repository?.id !== baseRepoId) return false;
+            if (run.pull_requests?.some(r => r.number !== pr.number && r.base.repo.id === baseRepoId)) return false;
             const runCreatedAt = new Date(run.created_at || run.run_started_at || 0);
-            return runCreatedAt <= cutoffTime;
+            return runCreatedAt < cutoffTime;
           });
 
+          let failed = 0;
           for (const run of targets) {
-            await github.rest.actions.cancelWorkflowRun({ owner, repo, run_id: run.id });
-            core.info(`Canceled ${run.html_url}`);
+            try {
+              await github.rest.actions.cancelWorkflowRun({ owner, repo, run_id: run.id });
+              core.info(`Canceled ${run.html_url}`);
+            } catch (error) {
+              // 409: the run completed after it was listed.
+              if (error.status === 409) {
+                core.info(`Already completed: ${run.html_url}`);
+              } else {
+                failed++;
+                core.warning(`Could not cancel ${run.html_url}: ${error.message}`);
+              }
+            }
           }
-
-
+          if (failed) core.setFailed(`Could not cancel ${failed} of ${targets.length} runs.`);
