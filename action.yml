@@ -6,12 +6,21 @@ branding:
   icon: "x"
   color: "red"
 
-inputs: {}
+inputs:
+  push-branch-prefixes:
+    description: >-
+      Literal head branch prefixes (not globs), one per line, naming branches that live only as long as their pull
+      request, such as Mergify's merge queue drafts (`mergify/merge-queue/`). Closing such a pull request unmerged
+      also cancels the `push` runs on its branch created before the close, never on the default branch. Empty by
+      default: `pull_request` runs only.
+    default: ""
 
 runs:
   using: "composite"
   steps:
     - uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd  # v8.0.0
+      env:
+        PUSH_BRANCH_PREFIXES: ${{ inputs.push-branch-prefixes }}
       with:
         github-token: ${{ github.token }}
         script: |
@@ -32,14 +41,32 @@ runs:
           const currentRunId = Number(process.env.GITHUB_RUN_ID);
           const cutoffTime = new Date(pr.closed_at);
 
-          // One listing rather than one per status: a run can go back from `in_progress` to
-          // `waiting`, so a run can slip between two per-status listings. `created` keeps it to this
-          // pull request's lifetime, as a reused branch name can carry years of completed runs. A run
-          // created while paging pushes the others down a page, so one can be listed twice.
-          const listed = await github.paginate(
+          // One listing per event rather than one per status: a run can go back from `in_progress`
+          // to `waiting`, so a run can slip between two per-status listings. A run created while
+          // paging pushes the others down a page, so one can be listed twice.
+          const listRuns = params => github.paginate(
             github.rest.actions.listWorkflowRunsForRepo,
-            { owner, repo, event: 'pull_request', branch: pr.head.ref, created: `>=${pr.created_at}`, per_page: 100 }
+            { owner, repo, branch: pr.head.ref, per_page: 100, ...params }
           );
+          // `created` keeps it to this pull request's lifetime, as a reused branch name can carry
+          // years of completed runs.
+          const listed = await listRuns({ event: 'pull_request', created: `>=${pr.created_at}` });
+
+          // A branch named by one of these prefixes belongs to its pull request, so its push runs
+          // are moot once it closes unmerged; a merged one's may still publish what landed. No
+          // `created` bound: the merge queue pushes the branch before it opens the draft.
+          const pushPrefixes = (process.env.PUSH_BRANCH_PREFIXES ?? '')
+            .split('\n').map(prefix => prefix.trim()).filter(Boolean);
+          if (!pr.merged && pr.head.ref !== pr.base.repo.default_branch
+              && pushPrefixes.some(prefix => pr.head.ref.startsWith(prefix))) {
+            core.info(`${pr.head.ref} matches push-branch-prefixes: its push runs are cancelled too.`);
+            try {
+              listed.push(...await listRuns({ event: 'push' }));
+            } catch (error) {
+              // Still cancel the pull_request runs already listed.
+              core.setFailed(`Could not list the push runs of ${pr.head.ref}: ${error.message}`);
+            }
+          }
 
           // GitHub fills `run.pull_requests` with the open pull requests whose head matches the run,
           // so it no longer lists this one once closed: match the head branch and repository instead.
